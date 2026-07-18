@@ -454,6 +454,7 @@
 		{ id: 'execute', label: 'Execute', defaultEnabled: true },
 		{ id: 'confirm', label: 'Confirm', defaultEnabled: true },
 		{ id: 'allow', label: 'Allow', defaultEnabled: true },
+		{ id: 'submit', label: 'Submit', defaultEnabled: true },
 	];
 
 	const DEFAULT_BANNED_COMMANDS = ['rm -rf /','rm -rf ~','rm -rf *','format c:','del /f /s /q','rmdir /s /q',':(){:|:&};:','dd if=','mkfs.','> /dev/sda','chmod -R 777 /'];
@@ -1002,7 +1003,7 @@
 		if (rejects.some(r => text.includes(r))) return false;
 		if (!patterns.some(p => text.includes(p))) return false;
 		const style = window.getComputedStyle(btn); const rect = btn.getBoundingClientRect();
-		return style.display !== 'none' && rect.width > 0 && !btn.disabled;
+		return style.display !== 'none' && rect.width > 0 && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true';
 	}
 	function findNearbyCommandText(btnEl) {
 		let cmd = ''; let container = btnEl.parentElement; let depth = 0;
@@ -1054,6 +1055,70 @@
 		const targets = [directButton, nestedButton, candidate.closest('button, [role="button"]'), candidate.closest('[class*="cursor-pointer"]'), clickableSelf].filter(Boolean);
 		return targets.find(el => root.contains(el) && !el.closest('#ab-overlay') && !el.closest('#ab-modal') && isVisibleEnabledActionElement(el));
 	}
+	function checkAndClickCommandModalSubmit() {
+		if (!currentSettings.autoAcceptEnabled) return;
+		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return;
+		if (!currentSettings.autoAcceptPatterns['submit']) return;
+		const hasTitle = Array.from(document.querySelectorAll('div, span, h1, h2, h3, h4, p')).some(node => {
+			const nodeText = (node.textContent || '').trim();
+			return (nodeText.includes('Allow running this command?') || nodeText.includes('允许运行此命令') || nodeText.includes('允许运行该命令')) && isVisibleEnabledActionElement(node);
+		});
+		if (!hasTitle) return;
+		const buttons = document.querySelectorAll('button, vscode-button, [role="button"]');
+		for (const btn of buttons) {
+			const text = (btn.textContent || '').trim().toLowerCase();
+			if ((text === 'submit' || text.startsWith('submit')) && isVisibleEnabledActionElement(btn)) {
+				console.log('[AB] 发现命令确认弹窗中的 Submit 按钮:', btn);
+				btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+				const scope = document.querySelector('.antigravity-agent-side-panel');
+				if (scope && scope._abUpdateStats) {
+					scope._abUpdateStats({ clicks: 1 });
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+	function checkAndClickMCPPermissionModal() {
+		if (!currentSettings.autoAcceptEnabled) return false;
+		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return false;
+		if (!currentSettings.autoAcceptPatterns['always allow'] || !currentSettings.autoAcceptPatterns['submit']) return false;
+		
+		const hasMCPTitle = Array.from(document.querySelectorAll('div, span, h1, h2, h3, h4, p')).some(node => {
+			const nodeText = (node.textContent || '').trim();
+			return (nodeText.includes('Allow using this MCP tool?') || nodeText.includes('允许使用此 MCP 工具') || nodeText.includes('允许使用该 MCP 工具')) && isVisibleEnabledActionElement(node);
+		});
+		if (!hasMCPTitle) return false;
+		
+		const optionNodes = Array.from(document.querySelectorAll('div, span, p, li, [role="option"], [role="button"]'));
+		const alwaysAllowOption = optionNodes.find(node => {
+			const text = (node.textContent || '').trim();
+			return (text.includes('always allow') || text.includes('始终允许') || text.includes('总是允许')) && isVisibleEnabledActionElement(node);
+		});
+		
+		if (alwaysAllowOption) {
+			console.log('[AB] 发现 MCP 权限选项并点击:', alwaysAllowOption);
+			alwaysAllowOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+			
+			setTimeout(() => {
+				const buttons = document.querySelectorAll('button, vscode-button, [role="button"]');
+				for (const btn of buttons) {
+					const text = (btn.textContent || '').trim().toLowerCase();
+					if ((text === 'submit' || text.startsWith('submit')) && isVisibleEnabledActionElement(btn)) {
+						console.log('[AB] 延迟点击 MCP 权限确认弹窗中的 Submit 按钮:', btn);
+						btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+						const scope = document.querySelector('.antigravity-agent-side-panel');
+						if (scope && scope._abUpdateStats) {
+							scope._abUpdateStats({ clicks: 1 });
+						}
+						break;
+					}
+				}
+			}, 50);
+			return true;
+		}
+		return false;
+	}
 	function findScopedPermissionTarget(scope, expectedText) {
 		const root = scope || document.querySelector('.antigravity-agent-side-panel');
 		if (!root) return null;
@@ -1091,7 +1156,7 @@
 	async function performScopedCommandAutoAccept(scope) {
 		if (!scope || !currentSettings.autoAcceptEnabled) return;
 		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return;
-		const buttons = scope.querySelectorAll('button');
+		const buttons = scope.querySelectorAll('button, vscode-button, [role="button"]');
 		for (const btn of buttons) {
 			if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) break;
 			const text = (btn.textContent || '').trim().toLowerCase();
@@ -1111,9 +1176,12 @@
 		if (!currentSettings.autoAcceptEnabled) return;
 		// 非无限模式下，剩余次数为0则停止
 		if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) return;
+		// 尝试自动点击命令授权弹窗的 Submit 按钮
+		checkAndClickCommandModalSubmit();
+		checkAndClickMCPPermissionModal();
 		const scope = panelEl || document.querySelector('.antigravity-agent-side-panel');
 		if (!scope) return;
-		const buttons = scope.querySelectorAll('button');
+		const buttons = scope.querySelectorAll('button, vscode-button, [role="button"]');
 		for (const btn of buttons) {
 			if (!currentSettings.autoAcceptUnlimited && currentSettings.autoAcceptRemaining <= 0) break;
 			if (!isAutoAcceptButton(btn)) continue;
@@ -1145,7 +1213,11 @@
 		if (!scope) return;
 		autoAcceptObserver = new MutationObserver(() => { clearTimeout(window._abAATimer); window._abAATimer = setTimeout(() => performAutoAccept(panelEl), 500); });
 		autoAcceptObserver.observe(scope, { childList: true, subtree: true, attributes: true, characterData: true });
-		autoAcceptPermissionTimer = setInterval(() => { performScopedPermissionAutoAccept(scope).catch(() => {}); }, 1000);
+		autoAcceptPermissionTimer = setInterval(() => { 
+			performScopedPermissionAutoAccept(scope).catch(() => {}); 
+			checkAndClickCommandModalSubmit(); 
+			checkAndClickMCPPermissionModal();
+		}, 1000);
 		autoAcceptCommandTimer = setInterval(() => { performScopedCommandAutoAccept(scope).catch(() => {}); }, 1000);
 		performAutoAccept(panelEl);
 	}
